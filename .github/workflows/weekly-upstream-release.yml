@@ -2,19 +2,17 @@ name: Weekly upstream build & release
 
 on:
   schedule:
-    - cron: '0 0 * * 0'   # 每週日 00:00 UTC
+    - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
       force_build:
-        description: 'Run build/release even if no upstream updates'
+        description: 'Build & release even if upstream has no new commits'
         required: false
         default: 'false'
 
 env:
-  # 原始專案
   UPSTREAM_REPO: Universal-Debloater-Alliance/universal-android-debloater-next-generation
   UPSTREAM_BRANCH: main
-  # 這裡改成你 fork 的 main
   TARGET_BRANCH: main
 
 jobs:
@@ -25,10 +23,10 @@ jobs:
     outputs:
       updated: ${{ steps.check.outputs.updated }}
     steps:
-      - name: Checkout fork (use main)
+      - name: Checkout fork (main)
         uses: actions/checkout@v4
         with:
-          ref: main           # 這裡用你有的分支就不會炸
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Add upstream & fetch
@@ -36,11 +34,6 @@ jobs:
           git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
           git fetch upstream ${{ env.UPSTREAM_BRANCH }}
           git fetch origin  ${{ env.TARGET_BRANCH }} || true
-
-      - name: Ensure on target branch (main)
-        run: |
-          # main 一定會有，但還是保險寫一下
-          git checkout ${{ env.TARGET_BRANCH }}
 
       - name: Check if upstream is newer
         id: check
@@ -53,51 +46,17 @@ jobs:
             echo "updated=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Merge from upstream
+      - name: Fast-forward from upstream
         if: steps.check.outputs.updated == 'true'
         run: |
+          git checkout ${{ env.TARGET_BRANCH }}
           git merge --ff-only upstream/${{ env.UPSTREAM_BRANCH }}
           git push origin ${{ env.TARGET_BRANCH }}
 
-      - name: Upload synced repo
-        if: steps.check.outputs.updated == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: synced-repo
-          path: .
-
   build:
     needs: sync
-    # 有更新就 build，或者手動時 force_build=true 也要 build
     if: needs.sync.outputs.updated == 'true' || github.event.inputs.force_build == 'true'
-    runs-on: ubuntu-22.04
-    steps:
-      # 如果是強制 build 但上面沒上傳，就直接 checkout main
-      - name: Checkout fallback
-        if: github.event.inputs.force_build == 'true' && needs.sync.outputs.updated != 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Download synced repo
-        if: needs.sync.outputs.updated == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: synced-repo
-          path: .
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release
-        run: |
-          cargo build --release
-
-      - name: Upload built binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: uad-ng
-          path: target/release/*
+    uses: ./.github/workflows/build_artifacts.yml
 
   release:
     needs: build
@@ -105,20 +64,27 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # 這裡「只」抓 windows 那顆 artifact
+      - name: Download windows artifact
+        uses: actions/download-artifact@v4
         with:
+          name: uad-ng-windows
           path: ./artifacts
+
       - name: Make tag name
         id: tag
         run: |
           TAG="auto-$(date -u +%F)"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
-      - name: Create release
+
+      - name: Create release (windows exe only)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Weekly upstream build ${{ steps.tag.outputs.tag }}
-          files: artifacts/**/*
+          # 只丟 exe，也可以順便丟 checksum
+          files: |
+            artifacts/uad-ng-windows.exe
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
