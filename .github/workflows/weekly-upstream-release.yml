@@ -1,0 +1,111 @@
+name: Weekly upstream build & release
+
+on:
+  schedule:
+    # 每週日 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch: {}
+
+env:
+  UPSTREAM_REPO: Universal-Debloater-Alliance/universal-android-debloater-next-generation
+  UPSTREAM_BRANCH: main
+  TARGET_BRANCH: dev
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write   # 用內建 GITHUB_TOKEN 也要這個才能 push
+    outputs:
+      updated: ${{ steps.check.outputs.updated }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          # 用內建的就好，這行其實可以省略 token
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Add upstream & fetch
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git
+          git fetch upstream ${{ env.UPSTREAM_BRANCH }}
+          git fetch origin  ${{ env.TARGET_BRANCH }} || true
+
+      - name: Prepare local target branch (dev)
+        run: |
+          if git show-ref --verify --quiet refs/heads/${{ env.TARGET_BRANCH }}; then
+            git checkout ${{ env.TARGET_BRANCH }}
+          else
+            # 如果你本來沒有 dev，就從 upstream/main 開一條
+            git checkout -b ${{ env.TARGET_BRANCH }} upstream/${{ env.UPSTREAM_BRANCH }}
+          fi
+
+      - name: Check if upstream is newer
+        id: check
+        run: |
+          UPSTREAM_SHA=$(git rev-parse upstream/${{ env.UPSTREAM_BRANCH }})
+          LOCAL_SHA=$(git rev-parse ${{ env.TARGET_BRANCH }})
+          if [ "$UPSTREAM_SHA" = "$LOCAL_SHA" ]; then
+            echo "updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "updated=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Merge from upstream
+        if: steps.check.outputs.updated == 'true'
+        run: |
+          # 保持線乾淨
+          git merge --ff-only upstream/${{ env.UPSTREAM_BRANCH }}
+          git push origin ${{ env.TARGET_BRANCH }}
+
+      - name: Upload synced repo
+        if: steps.check.outputs.updated == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-repo
+          path: .
+
+  build:
+    needs: sync
+    if: needs.sync.outputs.updated == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: synced-repo
+          path: .
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Build release
+        run: |
+          cargo build --release
+      - name: Upload built binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: uad-ng
+          path: target/release/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+      - name: Make tag name
+        id: tag
+        run: |
+          TAG="auto-$(date -u +%F)"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Weekly upstream build ${{ steps.tag.outputs.tag }}
+          files: artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
