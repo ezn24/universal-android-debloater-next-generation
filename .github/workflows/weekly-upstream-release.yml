@@ -2,9 +2,13 @@ name: Weekly upstream build & release
 
 on:
   schedule:
-    # 每週日 00:00 UTC
     - cron: '0 0 * * 0'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Run build/release even if no upstream updates'
+        required: false
+        default: 'false'
 
 env:
   UPSTREAM_REPO: Universal-Debloater-Alliance/universal-android-debloater-next-generation
@@ -15,14 +19,13 @@ jobs:
   sync:
     runs-on: ubuntu-22.04
     permissions:
-      contents: write   # 用內建 GITHUB_TOKEN 也要這個才能 push
+      contents: write
     outputs:
       updated: ${{ steps.check.outputs.updated }}
     steps:
       - name: Checkout fork
         uses: actions/checkout@v4
         with:
-          # 用內建的就好，這行其實可以省略 token
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
@@ -37,7 +40,6 @@ jobs:
           if git show-ref --verify --quiet refs/heads/${{ env.TARGET_BRANCH }}; then
             git checkout ${{ env.TARGET_BRANCH }}
           else
-            # 如果你本來沒有 dev，就從 upstream/main 開一條
             git checkout -b ${{ env.TARGET_BRANCH }} upstream/${{ env.UPSTREAM_BRANCH }}
           fi
 
@@ -53,13 +55,14 @@ jobs:
           fi
 
       - name: Merge from upstream
+        # 有更新才 merge
         if: steps.check.outputs.updated == 'true'
         run: |
-          # 保持線乾淨
           git merge --ff-only upstream/${{ env.UPSTREAM_BRANCH }}
           git push origin ${{ env.TARGET_BRANCH }}
 
       - name: Upload synced repo
+        # 有更新才傳 artifact
         if: steps.check.outputs.updated == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -68,18 +71,31 @@ jobs:
 
   build:
     needs: sync
-    if: needs.sync.outputs.updated == 'true'
+    # 這行是關鍵：有更新就 build，或是手動觸發時 force_build=true 也 build
+    if: needs.sync.outputs.updated == 'true' || github.event.inputs.force_build == 'true'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/download-artifact@v4
+      # 如果是 force_build 但前面沒上傳 synced-repo，這裡就直接 checkout
+      - name: Checkout (fallback)
+        if: github.event.inputs.force_build == 'true' && needs.sync.outputs.updated != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TARGET_BRANCH }}
+
+      - name: Download synced repo
+        if: needs.sync.outputs.updated == 'true'
+        uses: actions/download-artifact@v4
         with:
           name: synced-repo
           path: .
+
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
       - name: Build release
         run: |
           cargo build --release
+
       - name: Upload built binary
         uses: actions/upload-artifact@v4
         with:
