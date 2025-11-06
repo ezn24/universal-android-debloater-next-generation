@@ -2,6 +2,7 @@ name: Weekly upstream build & release
 
 on:
   schedule:
+    # 每週日 00:00 UTC 跑一次
     - cron: '0 0 * * 0'
   workflow_dispatch:
     inputs:
@@ -55,7 +56,9 @@ jobs:
 
   build:
     needs: sync
+    # 有更新才 build，或手動時 force_build=true 也要 build
     if: needs.sync.outputs.updated == 'true' || github.event.inputs.force_build == 'true'
+    # 這裡直接呼叫你那個多平台的 build_artifacts.yml
     uses: ./.github/workflows/build_artifacts.yml
 
   release:
@@ -64,11 +67,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      # 這裡「只」抓 windows 那顆 artifact
-      - name: Download windows artifact
+      - name: Download all artifacts from build
         uses: actions/download-artifact@v4
         with:
-          name: uad-ng-windows
           path: ./artifacts
 
       - name: Make tag name
@@ -77,14 +78,13 @@ jobs:
           TAG="auto-$(date -u +%F)"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Create release (windows exe only)
+      - name: Create release (all platforms)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: Weekly upstream build ${{ steps.tag.outputs.tag }}
-          # 只丟 exe，也可以順便丟 checksum
-          files: |
-            artifacts/uad-ng-windows.exe
+          # 把 build_artifacts 上傳的全部都丟上去
+          files: artifacts/**/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
