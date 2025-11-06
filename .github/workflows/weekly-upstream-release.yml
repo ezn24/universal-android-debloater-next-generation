@@ -2,7 +2,7 @@ name: Weekly upstream build & release
 
 on:
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '0 0 * * 0'   # 每週日 00:00 UTC
   workflow_dispatch:
     inputs:
       force_build:
@@ -11,9 +11,11 @@ on:
         default: 'false'
 
 env:
+  # 原始專案
   UPSTREAM_REPO: Universal-Debloater-Alliance/universal-android-debloater-next-generation
   UPSTREAM_BRANCH: main
-  TARGET_BRANCH: dev
+  # 這裡改成你 fork 的 main
+  TARGET_BRANCH: main
 
 jobs:
   sync:
@@ -23,10 +25,10 @@ jobs:
     outputs:
       updated: ${{ steps.check.outputs.updated }}
     steps:
-      - name: Checkout fork
+      - name: Checkout fork (use main)
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main           # 這裡用你有的分支就不會炸
           fetch-depth: 0
 
       - name: Add upstream & fetch
@@ -35,13 +37,10 @@ jobs:
           git fetch upstream ${{ env.UPSTREAM_BRANCH }}
           git fetch origin  ${{ env.TARGET_BRANCH }} || true
 
-      - name: Prepare local target branch (dev)
+      - name: Ensure on target branch (main)
         run: |
-          if git show-ref --verify --quiet refs/heads/${{ env.TARGET_BRANCH }}; then
-            git checkout ${{ env.TARGET_BRANCH }}
-          else
-            git checkout -b ${{ env.TARGET_BRANCH }} upstream/${{ env.UPSTREAM_BRANCH }}
-          fi
+          # main 一定會有，但還是保險寫一下
+          git checkout ${{ env.TARGET_BRANCH }}
 
       - name: Check if upstream is newer
         id: check
@@ -55,14 +54,12 @@ jobs:
           fi
 
       - name: Merge from upstream
-        # 有更新才 merge
         if: steps.check.outputs.updated == 'true'
         run: |
           git merge --ff-only upstream/${{ env.UPSTREAM_BRANCH }}
           git push origin ${{ env.TARGET_BRANCH }}
 
       - name: Upload synced repo
-        # 有更新才傳 artifact
         if: steps.check.outputs.updated == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -71,16 +68,16 @@ jobs:
 
   build:
     needs: sync
-    # 這行是關鍵：有更新就 build，或是手動觸發時 force_build=true 也 build
+    # 有更新就 build，或者手動時 force_build=true 也要 build
     if: needs.sync.outputs.updated == 'true' || github.event.inputs.force_build == 'true'
     runs-on: ubuntu-22.04
     steps:
-      # 如果是 force_build 但前面沒上傳 synced-repo，這裡就直接 checkout
-      - name: Checkout (fallback)
+      # 如果是強制 build 但上面沒上傳，就直接 checkout main
+      - name: Checkout fallback
         if: github.event.inputs.force_build == 'true' && needs.sync.outputs.updated != 'true'
         uses: actions/checkout@v4
         with:
-          ref: ${{ env.TARGET_BRANCH }}
+          ref: main
 
       - name: Download synced repo
         if: needs.sync.outputs.updated == 'true'
